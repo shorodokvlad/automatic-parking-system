@@ -1,5 +1,8 @@
 """
-parking_env.py  (v3 — scene-independent sensor fusion)
+parking_env.py
+--------------
+Gymnasium environment: ego car must parallel park between two stationary cars.
+State Space: 17 continuous values (now including 3 proximity sensors).
 """
 
 import math
@@ -7,169 +10,94 @@ import time
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
+from coppeliasim_car import AckermannCar, connect
 
-from coppeliasim_car import (
-    AckermannCar,
-    connect,
-    MAX_WHEEL_SPEED,
-    DEFAULT_PROXIMITY_MAX_DISTANCE,
-)
+WORLD_SCALE      = 5.0    
+MAX_STEPS        = 500    
+SIM_DT           = 0.05   
 
-# ── Scene-independent object constants ────────────────────────────────────────
-EGO_NAME = "/nakedAckermannSteeringCar[0]"
+# Relaxed Parking-success thresholds
+POS_THRESHOLD    = 0.30   # Metres from target centre
+YAW_THRESHOLD    = math.radians(15)
+SPEED_THRESHOLD  = 0.3    # rad/s wheel speed
 
-# ── Training constants ────────────────────────────────────────────────────────
+COLLISION_DIST   = 0.25   
 
-MAX_STEPS      = 900
-WORLD_SCALE    = 3.0
-SENSOR_RANGE   = DEFAULT_PROXIMITY_MAX_DISTANCE
+# Assuming vertical orientation based on the debug log coordinates
+TARGET_X   =  1.400   
+TARGET_Y   = -3.000
+TARGET_YAW =  math.radians(90)   
 
-# Thresholds for success
-POS_THRESHOLD   = 0.35
-YAW_THRESHOLD   = math.radians(20)
-BALANCE_THRESH  = 0.18
-FRONT_SAFE_MIN  = 0.20
-FRONT_SAFE_MAX  = 0.90
-TARGET_FRONT_DISTANCE = 0.55
-COLLISION_FRONT_THRESHOLD = 0.12
-COLLISION_SIDE_THRESHOLD = 0.10
-
-# Gap estimator constants (metres / scale factors), tuned as scene-agnostic defaults.
-# Tuning basis: standard passenger-car parking dimensions and a ~3m short-range sensor setup.
-# If sensor range or vehicle footprint changes significantly, recalibrate these values.
-GAP_FORWARD_SCALE = 0.55
-GAP_FORWARD_BIAS = 0.20
-GAP_FORWARD_MIN = 0.35
-GAP_FORWARD_MAX = 1.60
-GAP_LATERAL_SCALE = 0.75
-GAP_LATERAL_MIN = 0.30
-GAP_LATERAL_MAX = 1.20
-
-DIFFICULTY_CONFIG = {
-    # max_steps: number of simulation steps per episode
-    # sensor_noise: additive Gaussian noise in metres for proximity readings
-    # start_radius: spawn randomization radius around scene ego-car anchor in metres
-    # start_yaw_range: spawn randomization heading range in degrees
-    # pos_threshold: success distance threshold in metres
-    "easy":   {"max_steps": 700,  "sensor_noise": 0.00, "start_radius": 0.6, "start_yaw_range": 35.0, "pos_threshold": 0.40},
-    "medium": {"max_steps": 900,  "sensor_noise": 0.01, "start_radius": 1.0, "start_yaw_range": 45.0, "pos_threshold": 0.35},
-    "hard":   {"max_steps": 1200, "sensor_noise": 0.02, "start_radius": 1.4, "start_yaw_range": 55.0, "pos_threshold": 0.30},
-}
-
-OBS_IDX_FRONT = 0
-OBS_IDX_LEFT = 1
-OBS_IDX_RIGHT = 2
-OBS_IDX_DIST = 3
-OBS_IDX_LATERAL_BALANCE = 11
-
+EGO_NAME   = "/nakedAckermannSteeringCar[0]"
+PARK1_NAME = "/nakedAckermannSteeringCar[1]"
+PARK2_NAME = "/nakedAckermannSteeringCar[2]"
 
 class ParallelParkingEnv(gym.Env):
-    """
-    Gymnasium env for parallel parking with nakedAckermannSteeringCar.
-
-    Observation (12 floats):
-      [0]    front proximity / SENSOR_RANGE              (0 -> 1)
-      [1]    left  proximity / SENSOR_RANGE              (0 -> 1)
-      [2]    right proximity / SENSOR_RANGE              (0 -> 1)
-      [3]    dist to estimated gap center / WORLD_SCALE  (0 -> 1)
-      [4-5]  unit vector ego->estimated gap center       (-1 -> 1)
-      [6]    cos(yaw_error_to_gap)                       (-1 -> 1)
-      [7]    sin(yaw_error_to_gap)                       (-1 -> 1)
-      [8-9]  ego velocity (vx, vy) / MAX_WHEEL_SPEED     (-1 -> 1)
-      [10]   ego angular velocity / pi                   (-1 -> 1)
-      [11]   lateral balance (right-left)/SENSOR_RANGE   (-1 -> 1)
-
-    Action (2 floats in [-1, 1]):
-      [0]  steer_norm
-      [1]  speed_norm  (dead zone +-0.05 inside AckermannCar)
-    """
-
     metadata = {"render_modes": []}
 
-    def __init__(
-        self,
-        randomise_start: bool = True,
-        difficulty: str = "medium",
-        max_steps: int | None = None,
-        render_mode            = None,
-    ):
+    def __init__(self, randomise_start: bool = True, randomise_gap: bool = False, render_mode = None):
         super().__init__()
-
         self.randomise_start = randomise_start
-        if difficulty not in DIFFICULTY_CONFIG:
-            raise ValueError(
-                f"Unknown difficulty '{difficulty}'. Expected one of {tuple(DIFFICULTY_CONFIG.keys())}."
-            )
-        if SENSOR_RANGE <= 0.0:
-            raise ValueError(
-                f"SENSOR_RANGE (from DEFAULT_PROXIMITY_MAX_DISTANCE) must be positive, got {SENSOR_RANGE}"
-            )
-        self.difficulty = difficulty
-
-        cfg = DIFFICULTY_CONFIG[self.difficulty]
-        self._max_steps      = int(max_steps if max_steps is not None else cfg["max_steps"])
-        self._sensor_noise   = float(cfg["sensor_noise"])
-        self._start_radius   = float(cfg["start_radius"])
-        self._start_yaw_range = math.radians(float(cfg["start_yaw_range"]))
-        self._pos_threshold  = float(cfg["pos_threshold"])
+        self.randomise_gap   = randomise_gap
 
         self._client, self._sim = connect()
         sim = self._sim
 
-        self.ego = AckermannCar(sim, EGO_NAME)
+        self.ego   = AckermannCar(sim, EGO_NAME)
+        self.park1 = AckermannCar(sim, PARK1_NAME)
+        self.park2 = AckermannCar(sim, PARK2_NAME)
 
-        self.observation_space = spaces.Box(-1.0, 1.0, shape=(12,), dtype=np.float32)
-        self.action_space      = spaces.Box(-1.0, 1.0, shape=(2,),  dtype=np.float32)
+        # 17 Dimensions (14 math + 3 sensors)
+        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(17,), dtype=np.float32)
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
 
-        self._step_count = 0
-        self._prev_dist  = None
-        self._target     = np.zeros(2, dtype=np.float32)
-        self._target_yaw = 0.0
-        self._spawn_anchor = np.zeros(2, dtype=np.float32)
-
-    # ── Gymnasium API ─────────────────────────────────────────────────────────
+        self._step_count  = 0
+        self._prev_dist   = None
+        self._target      = np.array([TARGET_X, TARGET_Y], dtype=np.float32)
+        self._target_yaw  = TARGET_YAW
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-
         sim = self._sim
         sim.stopSimulation()
-        time.sleep(0.2)
+        time.sleep(0.3)
         sim.startSimulation()
-        time.sleep(0.2)
+        time.sleep(0.3)
 
-        anchor_pos, anchor_yaw = self.ego.get_pose()
-        self._spawn_anchor = anchor_pos.copy()
-        ego_x, ego_y, ego_yaw = (
-            self._sample_start(anchor_pos, anchor_yaw) if self.randomise_start
-            else (float(anchor_pos[0]), float(anchor_pos[1]), float(anchor_yaw))
-        )
+        if self.randomise_gap:
+            self._randomise_gap()
+
+        if self.randomise_start:
+            ego_x, ego_y, ego_yaw = self._sample_start()
+        else:
+            ego_x, ego_y, ego_yaw = TARGET_X, TARGET_Y - 1.5, TARGET_YAW
+
         self.ego.set_pose(ego_x, ego_y, ego_yaw)
         self.ego.stop()
 
-        # Take one sim step so physics settles before we read obs
-        self._client.step()
-
         self._step_count = 0
+        self._prev_dist  = None
+
         obs = self._get_obs()
-        self._prev_dist = _dist_from_obs(obs)
+        self._prev_dist = self._dist_to_target(obs)
         return obs, {}
 
     def step(self, action: np.ndarray):
-        self.ego.set_controls(float(action[0]), float(action[1]))
+        steer = float(np.clip(action[0], -1, 1))
+        speed = float(np.clip(action[1], -1, 1))
 
-        # KEY FIX: advance sim by exactly one dt
-        self._client.step()
+        self.ego.set_controls(steer, speed)
+        self._client.step()          
         self._step_count += 1
 
-        obs                       = self._get_obs()
-        reward, terminated, info  = self._compute_reward(obs)
-        truncated                 = (self._step_count >= self._max_steps)
+        obs = self._get_obs()
+        reward, terminated, info = self._compute_reward(obs)
+        truncated = (self._step_count >= MAX_STEPS)
 
         if terminated or truncated:
             self.ego.stop()
 
-        self._prev_dist = _dist_from_obs(obs)
+        self._prev_dist = self._dist_to_target(obs)
         return obs, reward, terminated, truncated, info
 
     def close(self):
@@ -178,146 +106,117 @@ class ParallelParkingEnv(gym.Env):
         except Exception:
             pass
 
-    # ── Observation ───────────────────────────────────────────────────────────
-
     def _get_obs(self) -> np.ndarray:
         ego_pos, ego_yaw = self.ego.get_pose()
-        ego_vel          = self.ego.get_velocity()
-        prox             = self._read_proximity()
-        t, t_yaw         = self._estimate_gap_pose(ego_pos, ego_yaw, prox)
-        self._target = t
-        self._target_yaw = t_yaw
+        ego_vel          = self.ego.get_velocity()   
+        p1_pos, _        = self.park1.get_pose()
+        p2_pos, _        = self.park2.get_pose()
 
-        yaw_err = _angle_wrap(t_yaw - ego_yaw)
-        d_target = np.linalg.norm(t - ego_pos)
-        dir_t = _unit_vec(t - ego_pos)
-        lateral_balance = (prox["right"] - prox["left"]) / SENSOR_RANGE
+        target = self._target
+        t_yaw  = self._target_yaw
+
+        to_target = (target - ego_pos) / WORLD_SCALE
+        to_p1     = (p1_pos  - ego_pos) / WORLD_SCALE
+        to_p2     = (p2_pos  - ego_pos) / WORLD_SCALE
+
+        yaw_err   = _angle_wrap(t_yaw - ego_yaw) / math.pi
+        time_left = 1.0 - self._step_count / MAX_STEPS
+
+        # Read the newly configured sensors
+        sensors = self.ego.get_proximity_readings(max_distance=3.0)
+        s_front = sensors["front"] / 3.0
+        s_left  = sensors["left"] / 3.0
+        s_right = sensors["right"] / 3.0
 
         obs = np.array([
-            prox["front"] / SENSOR_RANGE,    # 0
-            prox["left"] / SENSOR_RANGE,     # 1
-            prox["right"] / SENSOR_RANGE,    # 2
-            d_target / WORLD_SCALE,          # 3
-            dir_t[0], dir_t[1],              # 4-5
-            math.cos(yaw_err),               # 6
-            math.sin(yaw_err),               # 7
-            ego_vel[0] / MAX_WHEEL_SPEED,    # 8
-            ego_vel[1] / MAX_WHEEL_SPEED,    # 9
-            ego_vel[2] / math.pi,            # 10
-            lateral_balance,                 # 11
+            ego_pos[0] / WORLD_SCALE,   
+            ego_pos[1] / WORLD_SCALE,   
+            ego_yaw / math.pi,          
+            ego_vel[0] / 5.0,           
+            ego_vel[1] / 5.0,           
+            ego_vel[2] / math.pi,       
+            to_target[0],               
+            to_target[1],               
+            yaw_err,                    
+            to_p1[0],                   
+            to_p1[1],                   
+            to_p2[0],                   
+            to_p2[1],                   
+            time_left,                  
+            s_front,                    
+            s_left,                     
+            s_right,                    
         ], dtype=np.float32)
 
         return np.clip(obs, -1.0, 1.0)
 
-    # ── Reward ────────────────────────────────────────────────────────────────
-
     def _compute_reward(self, obs: np.ndarray):
-        _, ego_yaw = self.ego.get_pose()
+        ego_pos, ego_yaw = self.ego.get_pose()
+        p1_pos, _        = self.park1.get_pose()
+        p2_pos, _        = self.park2.get_pose()
 
-        front    = float(obs[OBS_IDX_FRONT]) * SENSOR_RANGE
-        left     = float(obs[OBS_IDX_LEFT]) * SENSOR_RANGE
-        right    = float(obs[OBS_IDX_RIGHT]) * SENSOR_RANGE
-        dist     = _dist_from_obs(obs)
-        balance  = abs(float(obs[OBS_IDX_LATERAL_BALANCE]))
-        yaw_err  = abs(_angle_wrap(self._target_yaw - ego_yaw))
+        dist_to_target = self._dist_to_target(obs)
+        yaw_err        = abs(_angle_wrap(self._target_yaw - ego_yaw))
 
-        collision_risk = (
-            (front < COLLISION_FRONT_THRESHOLD)
-            or (left < COLLISION_SIDE_THRESHOLD)
-            or (right < COLLISION_SIDE_THRESHOLD)
-        )
-        front_in_slot  = FRONT_SAFE_MIN <= front <= FRONT_SAFE_MAX
+        col1 = np.linalg.norm(ego_pos - p1_pos)
+        col2 = np.linalg.norm(ego_pos - p2_pos)
+        colliding = (col1 < COLLISION_DIST) or (col2 < COLLISION_DIST)
 
-        r_proximity = math.exp(-2.5 * dist)
-        r_progress  = ((self._prev_dist - dist) * 8.0) if self._prev_dist is not None else 0.0
-        r_align     = math.exp(-2.0 * dist) * math.cos(yaw_err) * 0.6
-        r_balance   = 0.5 * (1.0 - balance)
-        r_front     = 0.3 if front_in_slot else -0.3 * abs(front - TARGET_FRONT_DISTANCE)
-        r_col       = -2.5 if collision_risk else 0.0
-        r_time      = -0.004
+        progress = 0.0
+        if self._prev_dist is not None:
+            # Multiplier increased to 15.0 to pull the car harder toward the spot
+            progress = (self._prev_dist - dist_to_target) * 15.0   
 
-        reward = r_proximity + r_progress + r_align + r_balance + r_front + r_col + r_time
+        r_align = -yaw_err / math.pi * 0.5
+        r_col   = -1.0 if colliding else 0.0
+        r_time  = -0.001
+
+        reward = progress + r_align + r_col + r_time
 
         terminated = False
-        info = {"dist": dist, "yaw_err": math.degrees(yaw_err), "front": front, "balance": balance}
+        info = {"dist": dist_to_target, "yaw_err": math.degrees(yaw_err)}
 
-        is_position_aligned = dist < self._pos_threshold
-        is_heading_aligned = yaw_err < YAW_THRESHOLD
-        is_laterally_centered = balance < BALANCE_THRESH
-        is_front_distance_valid = front_in_slot
+        ego_vel = self.ego.get_velocity()
+        speed   = np.linalg.norm(ego_vel[:2])
 
-        if is_position_aligned and is_heading_aligned and is_laterally_centered and is_front_distance_valid:
-            reward    += 25.0
+        success = (
+            dist_to_target < POS_THRESHOLD
+            and yaw_err    < YAW_THRESHOLD
+            and speed      < SPEED_THRESHOLD
+        )
+
+        if success:
+            reward    += 20.0
             terminated = True
             info["result"] = "success"
-        elif collision_risk:
-            reward    -= 6.0
+        elif colliding:
+            reward    -= 5.0
             terminated = True
             info["result"] = "collision"
 
         return reward, terminated, info
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _dist_to_target(self, obs: np.ndarray) -> float:
+        dx = obs[6] * WORLD_SCALE
+        dy = obs[7] * WORLD_SCALE
+        return math.hypot(dx, dy)
 
-    def _sample_start(self, anchor_pos: np.ndarray, anchor_yaw: float):
+    def _sample_start(self):
+        """Curriculum Start: Narrow box behind the spot."""
         rng = self.np_random
-        for _ in range(100):
-            x = anchor_pos[0] + rng.uniform(-self._start_radius, self._start_radius)
-            y = anchor_pos[1] + rng.uniform(-self._start_radius, self._start_radius)
-            yaw = anchor_yaw + rng.uniform(-self._start_yaw_range, self._start_yaw_range)
-            return float(x), float(y), float(yaw)
+        x   = rng.uniform(TARGET_X - 0.2, TARGET_X + 0.2) 
+        y   = rng.uniform(TARGET_Y - 1.5, TARGET_Y - 1.0)
+        yaw = rng.uniform(TARGET_YAW - 0.2, TARGET_YAW + 0.2) 
+        return x, y, yaw
 
-        return float(anchor_pos[0]), float(anchor_pos[1]), float(anchor_yaw)
-
-    def _read_proximity(self) -> dict[str, float]:
-        readings = self.ego.get_proximity_readings(max_distance=SENSOR_RANGE)
-        if self._sensor_noise > 0.0:
-            for k, v in readings.items():
-                noisy = v + float(self.np_random.normal(0.0, self._sensor_noise))
-                readings[k] = float(np.clip(noisy, 0.0, SENSOR_RANGE))
-        return readings
-
-    def _estimate_gap_pose(
-        self,
-        ego_pos: np.ndarray,
-        ego_yaw: float,
-        prox: dict[str, float],
-    ) -> tuple[np.ndarray, float]:
-        forward = np.array([math.cos(ego_yaw), math.sin(ego_yaw)], dtype=np.float32)
-        lateral = np.array([-math.sin(ego_yaw), math.cos(ego_yaw)], dtype=np.float32)
-
-        open_side = "left" if prox["left"] >= prox["right"] else "right"
-        side_sign = 1.0 if open_side == "left" else -1.0
-
-        max_side_distance = max(prox["left"], prox["right"])
-        # Forward offset combines a small constant bias and a linear front-clearance term:
-        # this biases the target into open space while still reacting to nearby obstacles.
-        raw_forward_offset = prox["front"] * GAP_FORWARD_SCALE + GAP_FORWARD_BIAS
-        forward_offset = float(np.clip(
-            raw_forward_offset,
-            GAP_FORWARD_MIN,
-            GAP_FORWARD_MAX,
-        ))
-        lateral_offset = float(np.clip(
-            max_side_distance * GAP_LATERAL_SCALE,
-            GAP_LATERAL_MIN,
-            GAP_LATERAL_MAX,
-        ))
-
-        target = ego_pos + forward * forward_offset + lateral * side_sign * lateral_offset
-        target_dir = target - ego_pos
-        target_yaw = float(math.atan2(target_dir[1], target_dir[0]))
-        return target.astype(np.float32), target_yaw
-
-
-# ── Utilities ─────────────────────────────────────────────────────────────────
+    def _randomise_gap(self):
+        rng = self.np_random
+        gap_noise1 = rng.uniform(-0.1, 0.1)
+        gap_noise2 = rng.uniform(-0.1, 0.1)
+        base_p1, base_yaw1 = self.park1.get_pose()
+        base_p2, base_yaw2 = self.park2.get_pose()
+        self.park1.set_pose(base_p1[0], base_p1[1] + gap_noise1, base_yaw1)
+        self.park2.set_pose(base_p2[0], base_p2[1] + gap_noise2, base_yaw2)
 
 def _angle_wrap(a: float) -> float:
     return (a + math.pi) % (2 * math.pi) - math.pi
-
-def _unit_vec(v: np.ndarray) -> np.ndarray:
-    n = np.linalg.norm(v)
-    return (v / n).astype(np.float32) if n > 1e-6 else np.zeros(2, dtype=np.float32)
-
-def _dist_from_obs(obs: np.ndarray) -> float:
-    return float(obs[OBS_IDX_DIST]) * WORLD_SCALE
