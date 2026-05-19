@@ -23,8 +23,6 @@ EGO_NAME = "/nakedAckermannSteeringCar[0]"
 MAX_STEPS      = 900
 WORLD_SCALE    = 3.0
 SENSOR_RANGE   = DEFAULT_PROXIMITY_MAX_DISTANCE
-if SENSOR_RANGE <= 0.0:
-    raise ValueError("SENSOR_RANGE must be positive.")
 
 # Thresholds for success
 POS_THRESHOLD   = 0.35
@@ -37,6 +35,7 @@ COLLISION_FRONT_THRESHOLD = 0.12
 COLLISION_SIDE_THRESHOLD = 0.10
 
 # Gap estimator constants (metres / scale factors), tuned as scene-agnostic defaults.
+# Tuning basis: standard passenger-car parking dimensions and a ~3m short-range sensor setup.
 # If sensor range or vehicle footprint changes significantly, recalibrate these values.
 GAP_FORWARD_SCALE = 0.55
 GAP_FORWARD_BIAS = 0.20
@@ -97,7 +96,15 @@ class ParallelParkingEnv(gym.Env):
         super().__init__()
 
         self.randomise_start = randomise_start
-        self.difficulty      = difficulty if difficulty in DIFFICULTY_CONFIG else "medium"
+        if difficulty not in DIFFICULTY_CONFIG:
+            raise ValueError(
+                f"Unknown difficulty '{difficulty}'. Expected one of {tuple(DIFFICULTY_CONFIG.keys())}."
+            )
+        if SENSOR_RANGE <= 0.0:
+            raise ValueError(
+                f"SENSOR_RANGE (from DEFAULT_PROXIMITY_MAX_DISTANCE) must be positive, got {SENSOR_RANGE}"
+            )
+        self.difficulty = difficulty
 
         cfg = DIFFICULTY_CONFIG[self.difficulty]
         self._max_steps      = int(max_steps if max_steps is not None else cfg["max_steps"])
@@ -210,7 +217,7 @@ class ParallelParkingEnv(gym.Env):
         front    = float(obs[OBS_IDX_FRONT]) * SENSOR_RANGE
         left     = float(obs[OBS_IDX_LEFT]) * SENSOR_RANGE
         right    = float(obs[OBS_IDX_RIGHT]) * SENSOR_RANGE
-        dist     = float(obs[OBS_IDX_DIST]) * WORLD_SCALE
+        dist     = _dist_from_obs(obs)
         balance  = abs(float(obs[OBS_IDX_LATERAL_BALANCE]))
         yaw_err  = abs(_angle_wrap(self._target_yaw - ego_yaw))
 
@@ -282,16 +289,17 @@ class ParallelParkingEnv(gym.Env):
         open_side = "left" if prox["left"] >= prox["right"] else "right"
         side_sign = 1.0 if open_side == "left" else -1.0
 
-        side_space = max(prox["left"], prox["right"])
+        max_side_distance = max(prox["left"], prox["right"])
         # Forward offset combines a small constant bias and a linear front-clearance term:
         # this biases the target into open space while still reacting to nearby obstacles.
+        raw_forward_offset = prox["front"] * GAP_FORWARD_SCALE + GAP_FORWARD_BIAS
         forward_offset = float(np.clip(
-            prox["front"] * GAP_FORWARD_SCALE + GAP_FORWARD_BIAS,
+            raw_forward_offset,
             GAP_FORWARD_MIN,
             GAP_FORWARD_MAX,
         ))
         lateral_offset = float(np.clip(
-            side_space * GAP_LATERAL_SCALE,
+            max_side_distance * GAP_LATERAL_SCALE,
             GAP_LATERAL_MIN,
             GAP_LATERAL_MAX,
         ))

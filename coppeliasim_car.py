@@ -128,6 +128,12 @@ class AckermannCar:
         return float(np.clip(distance, 0.0, max_distance))
 
     def _parse_proximity_result(self, result) -> tuple[bool, float | None]:
+        """
+        Parse CoppeliaSim proximity result formats:
+          - (detected, distance, detectedPoint, objectHandle, normalVector)
+          - (detected, detectedPoint, objectHandle, normalVector)
+        Returns (detected, distance_in_metres_or_none).
+        """
         if not isinstance(result, (list, tuple)) or len(result) == 0:
             return False, None
 
@@ -141,7 +147,7 @@ class AckermannCar:
         if len(result) > 1 and isinstance(result[1], (list, tuple)):
             p = result[1]
             if len(p) >= 3:
-                return True, float(math.sqrt(p[0] ** 2 + p[1] ** 2 + p[2] ** 2))
+                return True, float(np.linalg.norm(np.array(p[:3], dtype=np.float32)))
 
         return True, None
 
