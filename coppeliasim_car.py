@@ -18,15 +18,19 @@ MAX_WHEEL_SPEED = 3.0
 DEFAULT_PROXIMITY_MAX_DISTANCE = 3.0
 
 class AckermannCar:
-    def __init__(self, sim, base_name: str):
+    def __init__(self, sim, base_name: str, has_sensors: bool = False):
         self.sim  = sim
         self.name = base_name
 
         self.body_handle   = sim.getObject(base_name)
         self.steer_handles = [sim.getObject(f"{base_name}/{j}") for j in STEERING_JOINTS]
         self.motor_handles = [sim.getObject(f"{base_name}/{j}") for j in MOTOR_JOINTS]
-        self.proximity_handles = self._resolve_proximity_sensor_handles()
-
+        
+        # Only look for sensors if this car is supposed to have them
+        if has_sensors:
+            self.proximity_handles = self._resolve_proximity_sensor_handles()
+        else:
+            self.proximity_handles = {}
     def set_controls(self, steer_norm: float, speed_norm: float):
         steer = float(np.clip(steer_norm, -1, 1)) * MAX_STEER_ANGLE
         raw   = float(np.clip(speed_norm, -1, 1))

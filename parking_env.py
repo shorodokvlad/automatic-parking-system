@@ -43,7 +43,7 @@ class ParallelParkingEnv(gym.Env):
         self._client, self._sim = connect()
         sim = self._sim
 
-        self.ego   = AckermannCar(sim, EGO_NAME)
+        self.ego   = AckermannCar(sim, EGO_NAME, has_sensors=True)
         self.park1 = AckermannCar(sim, PARK1_NAME)
         self.park2 = AckermannCar(sim, PARK2_NAME)
 
