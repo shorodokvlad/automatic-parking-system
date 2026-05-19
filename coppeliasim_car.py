@@ -7,6 +7,7 @@ runs freely, causing observations to "jump" (the "teleport" effect).
 """
 
 import math
+import warnings
 import numpy as np
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
 
@@ -26,7 +27,7 @@ class AckermannCar:
         self.body_handle   = sim.getObject(base_name)
         self.steer_handles = [sim.getObject(f"{base_name}/{j}") for j in STEERING_JOINTS]
         self.motor_handles = [sim.getObject(f"{base_name}/{j}") for j in MOTOR_JOINTS]
-        self.proximity_handles = self._resolve_proximity_sensors()
+        self.proximity_handles = self._resolve_proximity_sensor_handles()
 
     def set_controls(self, steer_norm: float, speed_norm: float):
         """
@@ -79,7 +80,7 @@ class AckermannCar:
             distances[direction] = self._read_sensor_distance(handle, max_distance)
         return distances
 
-    def _resolve_proximity_sensors(self) -> dict[str, int | None]:
+    def _resolve_proximity_sensor_handles(self) -> dict[str, int | None]:
         sensor_aliases = {
             "front": ["proximityFront", "frontProximity", "proximitySensorFront", "sensorFront"],
             "left":  ["proximityLeft", "leftProximity", "proximitySensorLeft", "sensorLeft"],
@@ -88,12 +89,19 @@ class AckermannCar:
         handles = {}
         for direction, names in sensor_aliases.items():
             handles[direction] = None
-            for sensor_name in names:
+            for candidate_name in names:
                 try:
-                    handles[direction] = self.sim.getObject(f"{self.name}/{sensor_name}")
+                    handles[direction] = self.sim.getObject(f"{self.name}/{candidate_name}")
                     break
                 except Exception:
                     continue
+            if handles[direction] is None:
+                warnings.warn(
+                    f"{self.name}: proximity sensor for '{direction}' direction was not found; "
+                    f"falling back to max-distance readings.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         return handles
 
     def _read_sensor_distance(self, handle: int | None, max_distance: float) -> float:
@@ -102,27 +110,40 @@ class AckermannCar:
 
         try:
             result = self.sim.readProximitySensor(handle)
-        except Exception:
+        except Exception as exc:
+            warnings.warn(
+                f"{self.name}: failed to read proximity sensor {handle}: {exc}. "
+                f"Using max-distance fallback.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
             return float(max_distance)
 
-        detected = bool(result[0]) if isinstance(result, (list, tuple)) and len(result) > 0 else False
+        detected, distance = self._parse_proximity_result(result)
         if not detected:
             return float(max_distance)
-
-        # Handle both possible signatures:
-        # (detected, distance, detectedPoint, objectHandle, normalVector) or
-        # (detected, detectedPoint, objectHandle, normalVector)
-        distance = None
-        if isinstance(result, (list, tuple)) and len(result) > 1 and isinstance(result[1], (int, float)):
-            distance = float(result[1])
-        elif isinstance(result, (list, tuple)) and len(result) > 1 and isinstance(result[1], (list, tuple)):
-            p = result[1]
-            if len(p) >= 3:
-                distance = float(math.sqrt(p[0] ** 2 + p[1] ** 2 + p[2] ** 2))
 
         if distance is None:
             return float(max_distance)
         return float(np.clip(distance, 0.0, max_distance))
+
+    def _parse_proximity_result(self, result) -> tuple[bool, float | None]:
+        if not isinstance(result, (list, tuple)) or len(result) == 0:
+            return False, None
+
+        detected = bool(result[0])
+        if not detected:
+            return False, None
+
+        if len(result) > 1 and isinstance(result[1], (int, float)):
+            return True, float(result[1])
+
+        if len(result) > 1 and isinstance(result[1], (list, tuple)):
+            p = result[1]
+            if len(p) >= 3:
+                return True, float(math.sqrt(p[0] ** 2 + p[1] ** 2 + p[2] ** 2))
+
+        return True, None
 
 
 def connect(host: str = "localhost", port: int = 23000):

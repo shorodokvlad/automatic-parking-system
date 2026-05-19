@@ -63,7 +63,6 @@ def main():
     train_env = Monitor(
         ParallelParkingEnv(
             randomise_start=True,
-            randomise_gap=False,
             difficulty=args.difficulty,
             max_steps=args.max_steps,
         ),
@@ -72,7 +71,6 @@ def main():
     eval_env = Monitor(
         ParallelParkingEnv(
             randomise_start=True,
-            randomise_gap=False,
             difficulty=args.difficulty,
             max_steps=args.max_steps,
         ),

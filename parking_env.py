@@ -23,6 +23,8 @@ EGO_NAME = "/nakedAckermannSteeringCar[0]"
 MAX_STEPS      = 900
 WORLD_SCALE    = 3.0
 SENSOR_RANGE   = DEFAULT_PROXIMITY_MAX_DISTANCE
+if SENSOR_RANGE <= 0.0:
+    raise ValueError("SENSOR_RANGE must be positive.")
 
 # Thresholds for success
 POS_THRESHOLD   = 0.35
@@ -30,12 +32,36 @@ YAW_THRESHOLD   = math.radians(20)
 BALANCE_THRESH  = 0.18
 FRONT_SAFE_MIN  = 0.20
 FRONT_SAFE_MAX  = 0.90
+TARGET_FRONT_DISTANCE = 0.55
+COLLISION_FRONT_THRESHOLD = 0.12
+COLLISION_SIDE_THRESHOLD = 0.10
+
+# Gap estimator constants (metres / scale factors), tuned as scene-agnostic defaults.
+# If sensor range or vehicle footprint changes significantly, recalibrate these values.
+GAP_FORWARD_SCALE = 0.55
+GAP_FORWARD_BIAS = 0.20
+GAP_FORWARD_MIN = 0.35
+GAP_FORWARD_MAX = 1.60
+GAP_LATERAL_SCALE = 0.75
+GAP_LATERAL_MIN = 0.30
+GAP_LATERAL_MAX = 1.20
 
 DIFFICULTY_CONFIG = {
-    "easy":   {"max_steps": 700,  "sensor_noise": 0.00, "start_radius": 0.6, "pos_threshold": 0.40},
-    "medium": {"max_steps": 900,  "sensor_noise": 0.01, "start_radius": 1.0, "pos_threshold": 0.35},
-    "hard":   {"max_steps": 1200, "sensor_noise": 0.02, "start_radius": 1.4, "pos_threshold": 0.30},
+    # max_steps: number of simulation steps per episode
+    # sensor_noise: additive Gaussian noise in metres for proximity readings
+    # start_radius: spawn randomization radius around scene ego-car anchor in metres
+    # start_yaw_range: spawn randomization heading range in degrees
+    # pos_threshold: success distance threshold in metres
+    "easy":   {"max_steps": 700,  "sensor_noise": 0.00, "start_radius": 0.6, "start_yaw_range": 35.0, "pos_threshold": 0.40},
+    "medium": {"max_steps": 900,  "sensor_noise": 0.01, "start_radius": 1.0, "start_yaw_range": 45.0, "pos_threshold": 0.35},
+    "hard":   {"max_steps": 1200, "sensor_noise": 0.02, "start_radius": 1.4, "start_yaw_range": 55.0, "pos_threshold": 0.30},
 }
+
+OBS_IDX_FRONT = 0
+OBS_IDX_LEFT = 1
+OBS_IDX_RIGHT = 2
+OBS_IDX_DIST = 3
+OBS_IDX_LATERAL_BALANCE = 11
 
 
 class ParallelParkingEnv(gym.Env):
@@ -64,7 +90,6 @@ class ParallelParkingEnv(gym.Env):
     def __init__(
         self,
         randomise_start: bool = True,
-        randomise_gap:   bool = False,
         difficulty: str = "medium",
         max_steps: int | None = None,
         render_mode            = None,
@@ -72,13 +97,13 @@ class ParallelParkingEnv(gym.Env):
         super().__init__()
 
         self.randomise_start = randomise_start
-        self.randomise_gap   = randomise_gap
         self.difficulty      = difficulty if difficulty in DIFFICULTY_CONFIG else "medium"
 
         cfg = DIFFICULTY_CONFIG[self.difficulty]
         self._max_steps      = int(max_steps if max_steps is not None else cfg["max_steps"])
         self._sensor_noise   = float(cfg["sensor_noise"])
         self._start_radius   = float(cfg["start_radius"])
+        self._start_yaw_range = math.radians(float(cfg["start_yaw_range"]))
         self._pos_threshold  = float(cfg["pos_threshold"])
 
         self._client, self._sim = connect()
@@ -182,21 +207,25 @@ class ParallelParkingEnv(gym.Env):
     def _compute_reward(self, obs: np.ndarray):
         _, ego_yaw = self.ego.get_pose()
 
-        front    = float(obs[0]) * SENSOR_RANGE
-        left     = float(obs[1]) * SENSOR_RANGE
-        right    = float(obs[2]) * SENSOR_RANGE
-        dist     = float(obs[3]) * WORLD_SCALE
-        balance  = abs(float(obs[11]))
+        front    = float(obs[OBS_IDX_FRONT]) * SENSOR_RANGE
+        left     = float(obs[OBS_IDX_LEFT]) * SENSOR_RANGE
+        right    = float(obs[OBS_IDX_RIGHT]) * SENSOR_RANGE
+        dist     = float(obs[OBS_IDX_DIST]) * WORLD_SCALE
+        balance  = abs(float(obs[OBS_IDX_LATERAL_BALANCE]))
         yaw_err  = abs(_angle_wrap(self._target_yaw - ego_yaw))
 
-        collision_risk = (front < 0.12) or (left < 0.10) or (right < 0.10)
+        collision_risk = (
+            (front < COLLISION_FRONT_THRESHOLD)
+            or (left < COLLISION_SIDE_THRESHOLD)
+            or (right < COLLISION_SIDE_THRESHOLD)
+        )
         front_in_slot  = FRONT_SAFE_MIN <= front <= FRONT_SAFE_MAX
 
         r_proximity = math.exp(-2.5 * dist)
         r_progress  = ((self._prev_dist - dist) * 8.0) if self._prev_dist is not None else 0.0
         r_align     = math.exp(-2.0 * dist) * math.cos(yaw_err) * 0.6
         r_balance   = 0.5 * (1.0 - balance)
-        r_front     = 0.3 if front_in_slot else -0.3 * abs(front - 0.55)
+        r_front     = 0.3 if front_in_slot else -0.3 * abs(front - TARGET_FRONT_DISTANCE)
         r_col       = -2.5 if collision_risk else 0.0
         r_time      = -0.004
 
@@ -205,7 +234,12 @@ class ParallelParkingEnv(gym.Env):
         terminated = False
         info = {"dist": dist, "yaw_err": math.degrees(yaw_err), "front": front, "balance": balance}
 
-        if dist < self._pos_threshold and yaw_err < YAW_THRESHOLD and balance < BALANCE_THRESH and front_in_slot:
+        is_position_aligned = dist < self._pos_threshold
+        is_heading_aligned = yaw_err < YAW_THRESHOLD
+        is_laterally_centered = balance < BALANCE_THRESH
+        is_front_distance_valid = front_in_slot
+
+        if is_position_aligned and is_heading_aligned and is_laterally_centered and is_front_distance_valid:
             reward    += 25.0
             terminated = True
             info["result"] = "success"
@@ -223,14 +257,10 @@ class ParallelParkingEnv(gym.Env):
         for _ in range(100):
             x = anchor_pos[0] + rng.uniform(-self._start_radius, self._start_radius)
             y = anchor_pos[1] + rng.uniform(-self._start_radius, self._start_radius)
-            yaw = anchor_yaw + rng.uniform(-math.radians(55), math.radians(55))
+            yaw = anchor_yaw + rng.uniform(-self._start_yaw_range, self._start_yaw_range)
             return float(x), float(y), float(yaw)
 
         return float(anchor_pos[0]), float(anchor_pos[1]), float(anchor_yaw)
-
-    def _randomise_gap(self):
-        # Scene-independent setup: gap geometry is inferred from proximity sensors.
-        return
 
     def _read_proximity(self) -> dict[str, float]:
         readings = self.ego.get_proximity_readings(max_distance=SENSOR_RANGE)
@@ -253,8 +283,18 @@ class ParallelParkingEnv(gym.Env):
         side_sign = 1.0 if open_side == "left" else -1.0
 
         side_space = max(prox["left"], prox["right"])
-        forward_offset = float(np.clip(prox["front"] * 0.55 + 0.2, 0.35, 1.6))
-        lateral_offset = float(np.clip(side_space * 0.75, 0.30, 1.20))
+        # Forward offset combines a small constant bias and a linear front-clearance term:
+        # this biases the target into open space while still reacting to nearby obstacles.
+        forward_offset = float(np.clip(
+            prox["front"] * GAP_FORWARD_SCALE + GAP_FORWARD_BIAS,
+            GAP_FORWARD_MIN,
+            GAP_FORWARD_MAX,
+        ))
+        lateral_offset = float(np.clip(
+            side_space * GAP_LATERAL_SCALE,
+            GAP_LATERAL_MIN,
+            GAP_LATERAL_MAX,
+        ))
 
         target = ego_pos + forward * forward_offset + lateral * side_sign * lateral_offset
         target_dir = target - ego_pos
@@ -272,4 +312,4 @@ def _unit_vec(v: np.ndarray) -> np.ndarray:
     return (v / n).astype(np.float32) if n > 1e-6 else np.zeros(2, dtype=np.float32)
 
 def _dist_from_obs(obs: np.ndarray) -> float:
-    return float(obs[3]) * WORLD_SCALE
+    return float(obs[OBS_IDX_DIST]) * WORLD_SCALE
