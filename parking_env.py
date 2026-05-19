@@ -79,14 +79,14 @@ class ParallelParkingEnv(gym.Env):
         self._update_target_from_parked_cars()
 
         if self.randomise_start:
+            # During training, jump to the curriculum coordinates
             ego_x, ego_y, ego_yaw = self._sample_start()
+            self.ego.set_pose(ego_x, ego_y, ego_yaw)
         else:
-            # Fixed start relative to the dynamic gap
-            ego_x = self._target[0]
-            ego_y = self._target[1] - 1.5
-            ego_yaw = self._target_yaw
+            # During evaluation with --no_random, do nothing!
+            # The car will stay exactly where you placed it in the CoppeliaSim UI.
+            pass
 
-        self.ego.set_pose(ego_x, ego_y, ego_yaw)
         self.ego.stop()
 
         self._step_count = 0
@@ -216,15 +216,22 @@ class ParallelParkingEnv(gym.Env):
         return math.hypot(dx, dy)
 
     def _sample_start(self):
-        """Curriculum Start: Narrow box behind the DYNAMIC spot."""
+        """Phase 2: Realistic parallel parking start position."""
         rng = self.np_random
-        tx = self._target[0]
-        ty = self._target[1]
-        tyaw = self._target_yaw
+        
+        # We use the front parked car's position as our reference point
+        p1_pos, p1_yaw = self.park1.get_pose() 
 
-        x   = rng.uniform(tx - 0.2, tx + 0.2) 
-        y   = rng.uniform(ty - 1.5, ty - 1.0)
-        yaw = rng.uniform(tyaw - 0.2, tyaw + 0.2) 
+        # INCREASED CLEARANCE: Spawn 2.5 to 3.0 meters to the side 
+        # This puts the ego car safely in the driving lane next to the spot
+        x   = rng.uniform(p1_pos[0] - 3.0, p1_pos[0] - 2.5) 
+        
+        # Start slightly behind the front car's front bumper so it has room to reverse
+        y   = rng.uniform(p1_pos[1] - 1.0, p1_pos[1] + 0.0) 
+        
+        # Face completely straight (parallel to the parked cars)
+        yaw = rng.uniform(p1_yaw - 0.1, p1_yaw + 0.1) 
+        
         return x, y, yaw
 
     def _randomise_gap(self):
