@@ -24,8 +24,9 @@ def main():
     args = parse_args()
     os.makedirs(args.logdir, exist_ok=True)
 
+    # Note: randomise_gap is now True so the AI learns dynamic environments!
     train_env = Monitor(
-        ParallelParkingEnv(randomise_start=True, randomise_gap=False),
+        ParallelParkingEnv(randomise_start=True, randomise_gap=True),
         filename=os.path.join(args.logdir, "train_monitor"),
     )
 

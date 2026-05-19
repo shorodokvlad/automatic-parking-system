@@ -2,7 +2,7 @@
 parking_env.py
 --------------
 Gymnasium environment: ego car must parallel park between two stationary cars.
-State Space: 17 continuous values (now including 3 proximity sensors).
+Features: 17D Observation Space (with sensors), Dynamic Gap Calculation.
 """
 
 import math
@@ -16,17 +16,12 @@ WORLD_SCALE      = 5.0
 MAX_STEPS        = 500    
 SIM_DT           = 0.05   
 
-# Relaxed Parking-success thresholds
-POS_THRESHOLD    = 0.30   # Metres from target centre
-YAW_THRESHOLD    = math.radians(15)
-SPEED_THRESHOLD  = 0.3    # rad/s wheel speed
+# Tightened success thresholds because it learned to brake!
+POS_THRESHOLD    = 0.15   # Must get completely into the spot
+YAW_THRESHOLD    = math.radians(10)
+SPEED_THRESHOLD  = 0.3    
 
 COLLISION_DIST   = 0.25   
-
-# Assuming vertical orientation based on the debug log coordinates
-TARGET_X   =  1.400   
-TARGET_Y   = -3.000
-TARGET_YAW =  math.radians(90)   
 
 EGO_NAME   = "/nakedAckermannSteeringCar[0]"
 PARK1_NAME = "/nakedAckermannSteeringCar[1]"
@@ -43,18 +38,31 @@ class ParallelParkingEnv(gym.Env):
         self._client, self._sim = connect()
         sim = self._sim
 
+        # Only Ego gets the sensors (fixes the terminal warnings)
         self.ego   = AckermannCar(sim, EGO_NAME, has_sensors=True)
-        self.park1 = AckermannCar(sim, PARK1_NAME)
-        self.park2 = AckermannCar(sim, PARK2_NAME)
+        self.park1 = AckermannCar(sim, PARK1_NAME, has_sensors=False)
+        self.park2 = AckermannCar(sim, PARK2_NAME, has_sensors=False)
 
-        # 17 Dimensions (14 math + 3 sensors)
-        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(17,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(18,), dtype=np.float32)
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
 
         self._step_count  = 0
         self._prev_dist   = None
-        self._target      = np.array([TARGET_X, TARGET_Y], dtype=np.float32)
-        self._target_yaw  = TARGET_YAW
+        self._target      = np.array([0.0, 0.0], dtype=np.float32)
+        self._target_yaw  = 0.0
+
+    def _update_target_from_parked_cars(self):
+        """Calculates the dynamic target spot based on parked car positions."""
+        p1_pos, p1_yaw = self.park1.get_pose() 
+        p2_pos, p2_yaw = self.park2.get_pose() 
+
+        # The perfect parking spot is exactly halfway between them
+        target_x = (p1_pos[0] + p2_pos[0]) / 2.0
+        target_y = (p1_pos[1] + p2_pos[1]) / 2.0
+
+        self._target = np.array([target_x, target_y], dtype=np.float32)
+        # Assume the ego car should face the same way as the front parked car
+        self._target_yaw = p1_yaw
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -67,10 +75,16 @@ class ParallelParkingEnv(gym.Env):
         if self.randomise_gap:
             self._randomise_gap()
 
+        # Update the math target before spawning the ego car
+        self._update_target_from_parked_cars()
+
         if self.randomise_start:
             ego_x, ego_y, ego_yaw = self._sample_start()
         else:
-            ego_x, ego_y, ego_yaw = TARGET_X, TARGET_Y - 1.5, TARGET_YAW
+            # Fixed start relative to the dynamic gap
+            ego_x = self._target[0]
+            ego_y = self._target[1] - 1.5
+            ego_yaw = self._target_yaw
 
         self.ego.set_pose(ego_x, ego_y, ego_yaw)
         self.ego.stop()
@@ -122,30 +136,31 @@ class ParallelParkingEnv(gym.Env):
         yaw_err   = _angle_wrap(t_yaw - ego_yaw) / math.pi
         time_left = 1.0 - self._step_count / MAX_STEPS
 
-        # Read the newly configured sensors
         sensors = self.ego.get_proximity_readings(max_distance=3.0)
         s_front = sensors["front"] / 3.0
         s_left  = sensors["left"] / 3.0
         s_right = sensors["right"] / 3.0
+        s_back  = sensors["back"] / 3.0
 
         obs = np.array([
-            ego_pos[0] / WORLD_SCALE,   
-            ego_pos[1] / WORLD_SCALE,   
-            ego_yaw / math.pi,          
-            ego_vel[0] / 5.0,           
-            ego_vel[1] / 5.0,           
-            ego_vel[2] / math.pi,       
-            to_target[0],               
-            to_target[1],               
-            yaw_err,                    
-            to_p1[0],                   
-            to_p1[1],                   
-            to_p2[0],                   
-            to_p2[1],                   
-            time_left,                  
-            s_front,                    
-            s_left,                     
-            s_right,                    
+            ego_pos[0] / WORLD_SCALE,   # 0
+            ego_pos[1] / WORLD_SCALE,   # 1
+            ego_yaw / math.pi,          # 2
+            ego_vel[0] / 5.0,           # 3  vx
+            ego_vel[1] / 5.0,           # 4  vy
+            ego_vel[2] / math.pi,       # 5  omega
+            to_target[0],               # 6
+            to_target[1],               # 7
+            yaw_err,                    # 8
+            to_p1[0],                   # 9
+            to_p1[1],                   # 10
+            to_p2[0],                   # 11
+            to_p2[1],                   # 12
+            time_left,                  # 13
+            s_front,                    # 14 
+            s_left,                     # 15 
+            s_right,                    # 16 
+            s_back,                     # 17 <--- Make sure this is actually here!
         ], dtype=np.float32)
 
         return np.clip(obs, -1.0, 1.0)
@@ -164,7 +179,6 @@ class ParallelParkingEnv(gym.Env):
 
         progress = 0.0
         if self._prev_dist is not None:
-            # Multiplier increased to 15.0 to pull the car harder toward the spot
             progress = (self._prev_dist - dist_to_target) * 15.0   
 
         r_align = -yaw_err / math.pi * 0.5
@@ -202,11 +216,15 @@ class ParallelParkingEnv(gym.Env):
         return math.hypot(dx, dy)
 
     def _sample_start(self):
-        """Curriculum Start: Narrow box behind the spot."""
+        """Curriculum Start: Narrow box behind the DYNAMIC spot."""
         rng = self.np_random
-        x   = rng.uniform(TARGET_X - 0.2, TARGET_X + 0.2) 
-        y   = rng.uniform(TARGET_Y - 1.5, TARGET_Y - 1.0)
-        yaw = rng.uniform(TARGET_YAW - 0.2, TARGET_YAW + 0.2) 
+        tx = self._target[0]
+        ty = self._target[1]
+        tyaw = self._target_yaw
+
+        x   = rng.uniform(tx - 0.2, tx + 0.2) 
+        y   = rng.uniform(ty - 1.5, ty - 1.0)
+        yaw = rng.uniform(tyaw - 0.2, tyaw + 0.2) 
         return x, y, yaw
 
     def _randomise_gap(self):

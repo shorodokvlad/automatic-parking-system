@@ -2,7 +2,6 @@
 coppeliasim_car.py
 ------------------
 Low-level wrapper around the CoppeliaSim ZMQ Remote API.
-Handles synchronous stepping and reading proximity sensors.
 """
 
 import math
@@ -18,6 +17,7 @@ MAX_WHEEL_SPEED = 3.0
 DEFAULT_PROXIMITY_MAX_DISTANCE = 3.0
 
 class AckermannCar:
+    # ADDED has_sensors FLAG HERE
     def __init__(self, sim, base_name: str, has_sensors: bool = False):
         self.sim  = sim
         self.name = base_name
@@ -26,11 +26,11 @@ class AckermannCar:
         self.steer_handles = [sim.getObject(f"{base_name}/{j}") for j in STEERING_JOINTS]
         self.motor_handles = [sim.getObject(f"{base_name}/{j}") for j in MOTOR_JOINTS]
         
-        # Only look for sensors if this car is supposed to have them
         if has_sensors:
             self.proximity_handles = self._resolve_proximity_sensor_handles()
         else:
             self.proximity_handles = {}
+
     def set_controls(self, steer_norm: float, speed_norm: float):
         steer = float(np.clip(steer_norm, -1, 1)) * MAX_STEER_ANGLE
         raw   = float(np.clip(speed_norm, -1, 1))
@@ -58,6 +58,13 @@ class AckermannCar:
 
     def set_pose(self, x: float, y: float, yaw: float):
         sim = self.sim
+        
+        # --- THE FIX: Cast NumPy floats to standard Python floats ---
+        x = float(x)
+        y = float(y)
+        yaw = float(yaw)
+        # ------------------------------------------------------------
+        
         pos = sim.getObjectPosition(self.body_handle, -1)
         sim.setObjectPosition(self.body_handle, -1, [x, y, pos[2]])
         eul = sim.getObjectOrientation(self.body_handle, -1)
@@ -74,6 +81,7 @@ class AckermannCar:
             "front": ["proximityFront", "frontProximity", "proximitySensorFront", "sensorFront"],
             "left":  ["proximityLeft", "leftProximity", "proximitySensorLeft", "sensorLeft"],
             "right": ["proximityRight", "rightProximity", "proximitySensorRight", "sensorRight"],
+            "back":  ["proximityBack", "backProximity", "proximitySensorBack", "sensorBack", "proximityRear", "rearProximity"],
         }
         handles = {}
         for direction, names in sensor_aliases.items():
