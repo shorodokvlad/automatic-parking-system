@@ -1,9 +1,14 @@
 """
-coppeliasim_car.py  (v2 — fixed stepping)
+coppeliasim_car.py  (v3 — fixed proximity sensor parsing)
 ------------------------------------------
 Key fix: synchronous stepping uses client.setStepping(True) + client.step().
 Using sim.step() does NOT advance the simulation in the ZMQ API — the sim
 runs freely, causing observations to "jump" (the "teleport" effect).
+
+Updated: proximity sensor result parsing now handles both formats
+  - (detected, distance, detectedPoint, objectHandle, normalVector) - 5 values
+  - (detected, detectedPoint, objectHandle, normalVector) - 4 values
+  - (detected, distance, ...) - 3+ values
 """
 
 import math
@@ -130,8 +135,9 @@ class AckermannCar:
     def _parse_proximity_result(self, result) -> tuple[bool, float | None]:
         """
         Parse CoppeliaSim proximity result formats:
-          - (detected, distance, detectedPoint, objectHandle, normalVector)
-          - (detected, detectedPoint, objectHandle, normalVector)
+          - (detected, distance, detectedPoint, objectHandle, normalVector) - 5 values
+          - (detected, detectedPoint, objectHandle, normalVector) - 4 values
+          - (detected, distance, ...) - 3+ values
         Returns (detected, distance_in_metres_or_none).
         """
         if not isinstance(result, (list, tuple)) or len(result) == 0:
@@ -141,15 +147,29 @@ class AckermannCar:
         if not detected:
             return False, None
 
-        if len(result) > 1 and isinstance(result[1], (int, float)):
-            return True, float(result[1])
+        # Try to extract distance from result
+        distance = None
 
-        if len(result) > 1 and isinstance(result[1], (list, tuple)):
+        # Format 1: (detected, distance, detectedPoint, objectHandle, normalVector) - 5 values
+        if len(result) >= 5:
+            # Second element should be distance
+            if isinstance(result[1], (int, float)):
+                distance = float(result[1])
+            # Otherwise try third element (detected point) for distance calculation
+            elif isinstance(result[2], (list, tuple)) and len(result[2]) >= 3:
+                distance = float(np.linalg.norm(np.array(result[2][:3], dtype=np.float32)))
+
+        # Format 2: (detected, distance, ...) - 3+ values
+        elif len(result) >= 2 and isinstance(result[1], (int, float)):
+            distance = float(result[1])
+
+        # Format 3: (detected, detectedPoint, ...) - extract distance from point
+        elif len(result) >= 2 and isinstance(result[1], (list, tuple)):
             p = result[1]
             if len(p) >= 3:
-                return True, float(np.linalg.norm(np.array(p[:3], dtype=np.float32)))
+                distance = float(np.linalg.norm(np.array(p[:3], dtype=np.float32)))
 
-        return True, None
+        return True, distance
 
 
 def connect(host: str = "localhost", port: int = 23000):
