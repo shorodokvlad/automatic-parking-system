@@ -35,7 +35,7 @@ def main():
         filename=os.path.join(args.logdir, "eval_monitor"),
     )
 
-    stop_cb = StopTrainingOnRewardThreshold(reward_threshold=15.0, verbose=1)
+    stop_cb = StopTrainingOnRewardThreshold(reward_threshold=70.0, verbose=1)
 
     eval_cb = EvalCallback(
         eval_env,
