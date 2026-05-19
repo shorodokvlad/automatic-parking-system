@@ -21,13 +21,19 @@ def parse_args():
     p.add_argument("--episodes", type=int, default=10)
     p.add_argument("--no_random", action="store_true",
                    help="Disable random start (use fixed start for debugging)")
+    p.add_argument("--difficulty", type=str, default="medium", choices=["easy", "medium", "hard"])
+    p.add_argument("--max_steps", type=int, default=None)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
 
-    env   = ParallelParkingEnv(randomise_start=not args.no_random)
+    env   = ParallelParkingEnv(
+        randomise_start=not args.no_random,
+        difficulty=args.difficulty,
+        max_steps=args.max_steps,
+    )
     model = PPO.load(args.model, env=env)
 
     successes  = 0
