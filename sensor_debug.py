@@ -50,6 +50,18 @@ def main():
     print(f"✓ Ego car: {EGO_NAME}")
     print(f"✓ Proximity sensor handles: {ego.proximity_handles}\n")
 
+    print(f"✓ Connected to CoppeliaSim")
+    print(f"✓ Ego car: {EGO_NAME}")
+    print(f"✓ Proximity sensor handles: {ego.proximity_handles}\n")
+
+    # --- ADD THESE TWO LINES ---
+    print("Starting simulation...")
+    sim.startSimulation()
+    # ---------------------------
+
+    start_time = time.time()
+    step_count = 0
+
     start_time = time.time()
     step_count = 0
 

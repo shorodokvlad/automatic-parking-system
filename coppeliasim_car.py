@@ -1,14 +1,8 @@
 """
-coppeliasim_car.py  (v3 — fixed proximity sensor parsing)
-------------------------------------------
-Key fix: synchronous stepping uses client.setStepping(True) + client.step().
-Using sim.step() does NOT advance the simulation in the ZMQ API — the sim
-runs freely, causing observations to "jump" (the "teleport" effect).
-
-Updated: proximity sensor result parsing now handles both formats
-  - (detected, distance, detectedPoint, objectHandle, normalVector) - 5 values
-  - (detected, detectedPoint, objectHandle, normalVector) - 4 values
-  - (detected, distance, ...) - 3+ values
+coppeliasim_car.py
+------------------
+Low-level wrapper around the CoppeliaSim ZMQ Remote API.
+Handles synchronous stepping and reading proximity sensors.
 """
 
 import math
@@ -19,10 +13,9 @@ from coppeliasim_zmqremoteapi_client import RemoteAPIClient
 STEERING_JOINTS = ["steeringRight", "steeringLeft"]
 MOTOR_JOINTS    = ["motorRight",    "motorLeft"]
 
-MAX_STEER_ANGLE = math.radians(30)   # tune to your scene's joint limits
-MAX_WHEEL_SPEED = 3.0                # rad/s — reduced for safer learning
+MAX_STEER_ANGLE = math.radians(30)
+MAX_WHEEL_SPEED = 3.0                
 DEFAULT_PROXIMITY_MAX_DISTANCE = 3.0
-
 
 class AckermannCar:
     def __init__(self, sim, base_name: str):
@@ -35,10 +28,6 @@ class AckermannCar:
         self.proximity_handles = self._resolve_proximity_sensor_handles()
 
     def set_controls(self, steer_norm: float, speed_norm: float):
-        """
-        steer_norm, speed_norm in [-1, 1].
-        Dead zone ±0.05 on speed so the car can actually stop.
-        """
         steer = float(np.clip(steer_norm, -1, 1)) * MAX_STEER_ANGLE
         raw   = float(np.clip(speed_norm, -1, 1))
         spd   = 0.0 if abs(raw) < 0.05 else raw * MAX_WHEEL_SPEED
@@ -55,13 +44,11 @@ class AckermannCar:
             self.sim.setJointTargetVelocity(h, 0.0)
 
     def get_pose(self) -> tuple[np.ndarray, float]:
-        """Returns (xy_position, yaw_rad) in world frame."""
         pos = self.sim.getObjectPosition(self.body_handle, -1)
         eul = self.sim.getObjectOrientation(self.body_handle, -1)
         return np.array([pos[0], pos[1]], dtype=np.float32), float(eul[2])
 
     def get_velocity(self) -> np.ndarray:
-        """Returns [vx, vy, omega_z] in world frame."""
         lin, ang = self.sim.getObjectVelocity(self.body_handle)
         return np.array([lin[0], lin[1], ang[2]], dtype=np.float32)
 
@@ -72,14 +59,7 @@ class AckermannCar:
         eul = sim.getObjectOrientation(self.body_handle, -1)
         sim.setObjectOrientation(self.body_handle, -1, [eul[0], eul[1], yaw])
 
-    def get_proximity_readings(
-        self,
-        max_distance: float = DEFAULT_PROXIMITY_MAX_DISTANCE,
-    ) -> dict[str, float]:
-        """
-        Returns proximity distances (metres) for front/left/right sensors.
-        If a sensor is missing or doesn't detect anything, max_distance is returned.
-        """
+    def get_proximity_readings(self, max_distance: float = DEFAULT_PROXIMITY_MAX_DISTANCE) -> dict[str, float]:
         distances = {}
         for direction, handle in self.proximity_handles.items():
             distances[direction] = self._read_sensor_distance(handle, max_distance)
@@ -102,83 +82,45 @@ class AckermannCar:
                     continue
             if handles[direction] is None:
                 warnings.warn(
-                    f"{self.name}: proximity sensor for '{direction}' direction was not found; "
-                    f"falling back to max-distance readings.",
-                    RuntimeWarning,
-                    stacklevel=2,
+                    f"{self.name}: proximity sensor for '{direction}' not found; using max-distance.",
+                    RuntimeWarning, stacklevel=2
                 )
         return handles
 
     def _read_sensor_distance(self, handle: int | None, max_distance: float) -> float:
         if handle is None:
             return float(max_distance)
-
         try:
             result = self.sim.readProximitySensor(handle)
-        except Exception as exc:
-            warnings.warn(
-                f"{self.name}: failed to read proximity sensor {handle}: {exc}. "
-                f"Using max-distance fallback.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+        except Exception:
             return float(max_distance)
 
         detected, distance = self._parse_proximity_result(result)
-        if not detected:
-            return float(max_distance)
-
-        if distance is None:
+        if not detected or distance is None:
             return float(max_distance)
         return float(np.clip(distance, 0.0, max_distance))
 
     def _parse_proximity_result(self, result) -> tuple[bool, float | None]:
-        """
-        Parse CoppeliaSim proximity result formats:
-          - (detected, distance, detectedPoint, objectHandle, normalVector) - 5 values
-          - (detected, detectedPoint, objectHandle, normalVector) - 4 values
-          - (detected, distance, ...) - 3+ values
-        Returns (detected, distance_in_metres_or_none).
-        """
         if not isinstance(result, (list, tuple)) or len(result) == 0:
             return False, None
-
-        detected = bool(result[0])
-        if not detected:
+        if not bool(result[0]):
             return False, None
 
-        # Try to extract distance from result
         distance = None
-
-        # Format 1: (detected, distance, detectedPoint, objectHandle, normalVector) - 5 values
         if len(result) >= 5:
-            # Second element should be distance
             if isinstance(result[1], (int, float)):
                 distance = float(result[1])
-            # Otherwise try third element (detected point) for distance calculation
             elif isinstance(result[2], (list, tuple)) and len(result[2]) >= 3:
                 distance = float(np.linalg.norm(np.array(result[2][:3], dtype=np.float32)))
-
-        # Format 2: (detected, distance, ...) - 3+ values
         elif len(result) >= 2 and isinstance(result[1], (int, float)):
             distance = float(result[1])
-
-        # Format 3: (detected, detectedPoint, ...) - extract distance from point
         elif len(result) >= 2 and isinstance(result[1], (list, tuple)):
-            p = result[1]
-            if len(p) >= 3:
-                distance = float(np.linalg.norm(np.array(p[:3], dtype=np.float32)))
-
+            if len(result[1]) >= 3:
+                distance = float(np.linalg.norm(np.array(result[1][:3], dtype=np.float32)))
         return True, distance
 
-
 def connect(host: str = "localhost", port: int = 23000):
-    """
-    Connect and enable synchronous stepping.
-    IMPORTANT: keep the returned client alive — it owns the step() call.
-    """
     client = RemoteAPIClient(host=host, port=port)
     sim    = client.require("sim")
-    # ── Critical fix: enable stepping on the CLIENT, not via Lua ──────────
     client.setStepping(True)
     return client, sim
