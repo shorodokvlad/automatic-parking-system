@@ -15,6 +15,7 @@ MOTOR_JOINTS    = ["motorRight",    "motorLeft"]
 
 MAX_STEER_ANGLE = math.radians(30)   # tune to your scene's joint limits
 MAX_WHEEL_SPEED = 3.0                # rad/s — reduced for safer learning
+DEFAULT_PROXIMITY_MAX_DISTANCE = 3.0
 
 
 class AckermannCar:
@@ -25,6 +26,7 @@ class AckermannCar:
         self.body_handle   = sim.getObject(base_name)
         self.steer_handles = [sim.getObject(f"{base_name}/{j}") for j in STEERING_JOINTS]
         self.motor_handles = [sim.getObject(f"{base_name}/{j}") for j in MOTOR_JOINTS]
+        self.proximity_handles = self._resolve_proximity_sensors()
 
     def set_controls(self, steer_norm: float, speed_norm: float):
         """
@@ -63,6 +65,64 @@ class AckermannCar:
         sim.setObjectPosition(self.body_handle, -1, [x, y, pos[2]])
         eul = sim.getObjectOrientation(self.body_handle, -1)
         sim.setObjectOrientation(self.body_handle, -1, [eul[0], eul[1], yaw])
+
+    def get_proximity_readings(
+        self,
+        max_distance: float = DEFAULT_PROXIMITY_MAX_DISTANCE,
+    ) -> dict[str, float]:
+        """
+        Returns proximity distances (metres) for front/left/right sensors.
+        If a sensor is missing or doesn't detect anything, max_distance is returned.
+        """
+        distances = {}
+        for direction, handle in self.proximity_handles.items():
+            distances[direction] = self._read_sensor_distance(handle, max_distance)
+        return distances
+
+    def _resolve_proximity_sensors(self) -> dict[str, int | None]:
+        sensor_aliases = {
+            "front": ["proximityFront", "frontProximity", "proximitySensorFront", "sensorFront"],
+            "left":  ["proximityLeft", "leftProximity", "proximitySensorLeft", "sensorLeft"],
+            "right": ["proximityRight", "rightProximity", "proximitySensorRight", "sensorRight"],
+        }
+        handles = {}
+        for direction, names in sensor_aliases.items():
+            handles[direction] = None
+            for sensor_name in names:
+                try:
+                    handles[direction] = self.sim.getObject(f"{self.name}/{sensor_name}")
+                    break
+                except Exception:
+                    continue
+        return handles
+
+    def _read_sensor_distance(self, handle: int | None, max_distance: float) -> float:
+        if handle is None:
+            return float(max_distance)
+
+        try:
+            result = self.sim.readProximitySensor(handle)
+        except Exception:
+            return float(max_distance)
+
+        detected = bool(result[0]) if isinstance(result, (list, tuple)) and len(result) > 0 else False
+        if not detected:
+            return float(max_distance)
+
+        # Handle both possible signatures:
+        # (detected, distance, detectedPoint, objectHandle, normalVector) or
+        # (detected, detectedPoint, objectHandle, normalVector)
+        distance = None
+        if isinstance(result, (list, tuple)) and len(result) > 1 and isinstance(result[1], (int, float)):
+            distance = float(result[1])
+        elif isinstance(result, (list, tuple)) and len(result) > 1 and isinstance(result[1], (list, tuple)):
+            p = result[1]
+            if len(p) >= 3:
+                distance = float(math.sqrt(p[0] ** 2 + p[1] ** 2 + p[2] ** 2))
+
+        if distance is None:
+            return float(max_distance)
+        return float(np.clip(distance, 0.0, max_distance))
 
 
 def connect(host: str = "localhost", port: int = 23000):

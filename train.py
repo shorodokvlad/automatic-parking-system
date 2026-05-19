@@ -30,6 +30,8 @@ def parse_args():
     p.add_argument("--resume",    type=str, default=None)
     p.add_argument("--logdir",    type=str, default="runs/ppo_parking")
     p.add_argument("--check_env", action="store_true")
+    p.add_argument("--difficulty", type=str, default="medium", choices=["easy", "medium", "hard"])
+    p.add_argument("--max_steps", type=int, default=None)
     return p.parse_args()
 
 
@@ -40,7 +42,11 @@ def main():
     # ── Optional sanity check ─────────────────────────────────────────────
     if args.check_env:
         print("Running env checker + stepping sanity check…")
-        env = ParallelParkingEnv(randomise_start=False)
+        env = ParallelParkingEnv(
+            randomise_start=False,
+            difficulty=args.difficulty,
+            max_steps=args.max_steps,
+        )
         check_env(env, warn=True)
 
         obs, _ = env.reset()
@@ -55,11 +61,21 @@ def main():
 
     # ── Environments ──────────────────────────────────────────────────────
     train_env = Monitor(
-        ParallelParkingEnv(randomise_start=True, randomise_gap=False),
+        ParallelParkingEnv(
+            randomise_start=True,
+            randomise_gap=False,
+            difficulty=args.difficulty,
+            max_steps=args.max_steps,
+        ),
         filename=os.path.join(args.logdir, "train_monitor"),
     )
     eval_env = Monitor(
-        ParallelParkingEnv(randomise_start=True, randomise_gap=False),
+        ParallelParkingEnv(
+            randomise_start=True,
+            randomise_gap=False,
+            difficulty=args.difficulty,
+            max_steps=args.max_steps,
+        ),
         filename=os.path.join(args.logdir, "eval_monitor"),
     )
 
