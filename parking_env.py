@@ -38,6 +38,9 @@ class ParallelParkingEnv(gym.Env):
         self._client, self._sim = connect()
         sim = self._sim
 
+        sim.startSimulation()
+        time.sleep(0.5)
+
         # Only Ego gets the sensors (fixes the terminal warnings)
         self.ego   = AckermannCar(sim, EGO_NAME, has_sensors=True)
         self.park1 = AckermannCar(sim, PARK1_NAME, has_sensors=False)
@@ -50,6 +53,8 @@ class ParallelParkingEnv(gym.Env):
         self._prev_dist   = None
         self._target      = np.array([0.0, 0.0], dtype=np.float32)
         self._target_yaw  = 0.0
+
+        self._manual_start_pose = self.ego.get_pose()
 
     def _update_target_from_parked_cars(self):
         """Calculates the dynamic target spot based on parked car positions."""
@@ -216,14 +221,12 @@ class ParallelParkingEnv(gym.Env):
         return math.hypot(dx, dy)
 
     def _sample_start(self):
-        """Phase 2: Realistic parallel parking start position."""
-        rng = self.np_random
-        p1_pos, p1_yaw = self.park1.get_pose() 
-
-        # Spawn safely in the driving lane
-        x   = rng.uniform(p1_pos[0] - 3.0, p1_pos[0] - 2.5) 
-        y   = rng.uniform(p1_pos[1] - 1.0, p1_pos[1] + 0.0) 
-        yaw = rng.uniform(p1_yaw - 0.1, p1_yaw + 0.1) 
+        """Manual Start: Uses the exact position placed in CoppeliaSim UI."""
+        saved_pos, saved_yaw = self._manual_start_pose
+        
+        x   = saved_pos[0]
+        y   = saved_pos[1]
+        yaw = saved_yaw
         
         return x, y, yaw
 

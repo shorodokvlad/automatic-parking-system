@@ -1,10 +1,14 @@
-# Creating virtual enviroment
+# Create virtual enviroment
 ```python
 python -m venv .venv;
 # activation (Windows):
  .venv\Scripts\activate;
 # activation (Linux/macOS): 
 source .venv/bin/activate;
+```
+## Install the packages listed inside a requirements.txt
+```
+pip install -r requirements.txt
 ```
 # 1. Training
 

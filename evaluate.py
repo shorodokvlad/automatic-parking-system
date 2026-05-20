@@ -17,7 +17,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    env   = ParallelParkingEnv(randomise_start=not args.no_random)
+    env   = ParallelParkingEnv(randomise_start=not args.no_random, randomise_gap=True)
     model = PPO.load(args.model, env=env)
 
     successes = 0

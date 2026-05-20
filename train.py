@@ -24,17 +24,17 @@ def main():
     args = parse_args()
     os.makedirs(args.logdir, exist_ok=True)
 
-    # Note: randomise_gap is now True so the AI learns dynamic environments!
     train_env = Monitor(
-        ParallelParkingEnv(randomise_start=True, randomise_gap=True),
+        ParallelParkingEnv(),
         filename=os.path.join(args.logdir, "train_monitor"),
     )
 
     eval_env = Monitor(
-        ParallelParkingEnv(randomise_start=True, randomise_gap=False),
+        ParallelParkingEnv(),
         filename=os.path.join(args.logdir, "eval_monitor"),
     )
 
+    # High threshold so it requires a perfect park before bailing out
     stop_cb = StopTrainingOnRewardThreshold(reward_threshold=105.0, verbose=1)
 
     eval_cb = EvalCallback(
