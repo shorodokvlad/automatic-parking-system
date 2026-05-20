@@ -16,9 +16,9 @@ WORLD_SCALE      = 5.0
 MAX_STEPS        = 500    
 SIM_DT           = 0.05   
 
-# Tightened success thresholds because it learned to brake!
-POS_THRESHOLD    = 0.15   # Must get completely into the spot
-YAW_THRESHOLD    = math.radians(10)
+# DEMANDING PERFECTION
+POS_THRESHOLD    = 0.10   # Must get completely into the spot
+YAW_THRESHOLD    = math.radians(4)
 SPEED_THRESHOLD  = 0.3    
 
 COLLISION_DIST   = 0.25   
@@ -218,17 +218,11 @@ class ParallelParkingEnv(gym.Env):
     def _sample_start(self):
         """Phase 2: Realistic parallel parking start position."""
         rng = self.np_random
-        
-        # We use the front parked car's position as our reference point
         p1_pos, p1_yaw = self.park1.get_pose() 
 
-        # Spawn 2.5 to 3.0 meters to the side (safely in the driving lane)
+        # Spawn safely in the driving lane
         x   = rng.uniform(p1_pos[0] - 3.0, p1_pos[0] - 2.5) 
-        
-        # Spawn aligned with the front car's body
         y   = rng.uniform(p1_pos[1] - 1.0, p1_pos[1] + 0.0) 
-        
-        # Face completely straight (parallel to the parked cars)
         yaw = rng.uniform(p1_yaw - 0.1, p1_yaw + 0.1) 
         
         return x, y, yaw
