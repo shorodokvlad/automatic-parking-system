@@ -17,7 +17,6 @@ MAX_WHEEL_SPEED = 3.0
 DEFAULT_PROXIMITY_MAX_DISTANCE = 3.0
 
 class AckermannCar:
-    # ADDED has_sensors FLAG HERE
     def __init__(self, sim, base_name: str, has_sensors: bool = False):
         self.sim  = sim
         self.name = base_name
@@ -27,6 +26,7 @@ class AckermannCar:
         self.motor_handles = [sim.getObject(f"{base_name}/{j}") for j in MOTOR_JOINTS]
         
         if has_sensors:
+            # We use your resolver to dynamically build the dictionary of all 8 sensors
             self.proximity_handles = self._resolve_proximity_sensor_handles()
         else:
             self.proximity_handles = {}
@@ -59,11 +59,9 @@ class AckermannCar:
     def set_pose(self, x: float, y: float, yaw: float):
         sim = self.sim
         
-        # --- THE FIX: Cast NumPy floats to standard Python floats ---
         x = float(x)
         y = float(y)
         yaw = float(yaw)
-        # ------------------------------------------------------------
         
         pos = sim.getObjectPosition(self.body_handle, -1)
         sim.setObjectPosition(self.body_handle, -1, [x, y, pos[2]])
@@ -71,7 +69,9 @@ class AckermannCar:
         sim.setObjectOrientation(self.body_handle, -1, [eul[0], eul[1], yaw])
 
     def get_proximity_readings(self, max_distance: float = DEFAULT_PROXIMITY_MAX_DISTANCE) -> dict[str, float]:
+        """Fires the lasers and returns the distances in a dictionary."""
         distances = {}
+        # Because we added the new sensors to the resolver below, this loop automatically reads all 8!
         for direction, handle in self.proximity_handles.items():
             distances[direction] = self._read_sensor_distance(handle, max_distance)
         return distances
@@ -82,6 +82,11 @@ class AckermannCar:
             "left":  ["proximityLeft", "leftProximity", "proximitySensorLeft", "sensorLeft"],
             "right": ["proximityRight", "rightProximity", "proximitySensorRight", "sensorRight"],
             "back":  ["proximityBack", "backProximity", "proximitySensorBack", "sensorBack", "proximityRear", "rearProximity"],
+            # --- THE 4 NEW DIAGONAL SENSORS ---
+            "front_left":  ["proximityFrontLeft"],
+            "front_right": ["proximityFrontRight"],
+            "back_left":   ["proximityBackLeft"],
+            "back_right":  ["proximityBackRight"],
         }
         handles = {}
         for direction, names in sensor_aliases.items():

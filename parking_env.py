@@ -16,7 +16,6 @@ WORLD_SCALE      = 5.0
 MAX_STEPS        = 500    
 SIM_DT           = 0.05   
 
-# DEMANDING PERFECTION
 POS_THRESHOLD    = 0.10   # Must get completely into the spot
 YAW_THRESHOLD    = math.radians(4)
 SPEED_THRESHOLD  = 0.3    
@@ -128,24 +127,26 @@ class ParallelParkingEnv(gym.Env):
     def _get_obs(self) -> np.ndarray:
         ego_pos, ego_yaw = self.ego.get_pose()
         ego_vel          = self.ego.get_velocity()   
-        p1_pos, _        = self.park1.get_pose()
-        p2_pos, _        = self.park2.get_pose()
 
         target = self._target
         t_yaw  = self._target_yaw
 
         to_target = (target - ego_pos) / WORLD_SCALE
-        to_p1     = (p1_pos  - ego_pos) / WORLD_SCALE
-        to_p2     = (p2_pos  - ego_pos) / WORLD_SCALE
-
         yaw_err   = _angle_wrap(t_yaw - ego_yaw) / math.pi
         time_left = 1.0 - self._step_count / MAX_STEPS
 
+        # Fetch all 8 sensors
         sensors = self.ego.get_proximity_readings(max_distance=3.0)
         s_front = sensors["front"] / 3.0
         s_left  = sensors["left"] / 3.0
         s_right = sensors["right"] / 3.0
         s_back  = sensors["back"] / 3.0
+        
+        # New Diagonal Sensors!
+        s_fl = sensors["front_left"] / 3.0
+        s_fr = sensors["front_right"] / 3.0
+        s_bl = sensors["back_left"] / 3.0
+        s_br = sensors["back_right"] / 3.0
 
         obs = np.array([
             ego_pos[0] / WORLD_SCALE,   # 0
@@ -157,15 +158,15 @@ class ParallelParkingEnv(gym.Env):
             to_target[0],               # 6
             to_target[1],               # 7
             yaw_err,                    # 8
-            to_p1[0],                   # 9
-            to_p1[1],                   # 10
-            to_p2[0],                   # 11
-            to_p2[1],                   # 12
-            time_left,                  # 13
-            s_front,                    # 14 
-            s_left,                     # 15 
-            s_right,                    # 16 
-            s_back,                     # 17 <--- Make sure this is actually here!
+            time_left,                  # 9
+            s_front,                    # 10 
+            s_left,                     # 11 
+            s_right,                    # 12 
+            s_back,                     # 13
+            s_fl,                       # 14
+            s_fr,                       # 15
+            s_bl,                       # 16
+            s_br,                       # 17
         ], dtype=np.float32)
 
         return np.clip(obs, -1.0, 1.0)
@@ -178,9 +179,14 @@ class ParallelParkingEnv(gym.Env):
         dist_to_target = self._dist_to_target(obs)
         yaw_err        = abs(_angle_wrap(self._target_yaw - ego_yaw))
 
-        col1 = np.linalg.norm(ego_pos - p1_pos)
-        col2 = np.linalg.norm(ego_pos - p2_pos)
-        colliding = (col1 < COLLISION_DIST) or (col2 < COLLISION_DIST)
+        # Real Collision Detection using all 8 sensors! 
+        min_sensor_dist = min(
+            obs[10], obs[11], obs[12], obs[13], 
+            obs[14], obs[15], obs[16], obs[17]
+        ) * 3.0  # Multiply by 3.0 to get real meters
+        
+        # If any side or corner gets closer than 15cm, it's a crash.
+        colliding = min_sensor_dist < 0.15
 
         progress = 0.0
         if self._prev_dist is not None:
