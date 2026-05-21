@@ -37,8 +37,8 @@ class ParallelParkingEnv(gym.Env):
         self._client, self._sim = connect()
         sim = self._sim
 
-        sim.startSimulation()
-        time.sleep(0.5)
+        #sim.startSimulation()
+        #time.sleep(0.5)
 
         # Only Ego gets the sensors (fixes the terminal warnings)
         self.ego   = AckermannCar(sim, EGO_NAME, has_sensors=True)
@@ -70,11 +70,6 @@ class ParallelParkingEnv(gym.Env):
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-        sim = self._sim
-        sim.stopSimulation()
-        time.sleep(0.3)
-        sim.startSimulation()
-        time.sleep(0.3)
 
         if self.randomise_gap:
             self._randomise_gap()
@@ -90,8 +85,12 @@ class ParallelParkingEnv(gym.Env):
             ego_y = self._target[1] - 1.5
             ego_yaw = self._target_yaw
 
+        # Teleport the car
         self.ego.set_pose(ego_x, ego_y, ego_yaw)
         self.ego.stop()
+
+        # Let the physics engine process the teleport smoothly
+        time.sleep(0.1)
 
         self._step_count = 0
         self._prev_dist  = None
@@ -120,7 +119,8 @@ class ParallelParkingEnv(gym.Env):
 
     def close(self):
         try:
-            self._sim.stopSimulation()
+            #self._sim.stopSimulation()
+            pass
         except Exception:
             pass
 
