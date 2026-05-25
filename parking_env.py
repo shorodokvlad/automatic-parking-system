@@ -16,11 +16,12 @@ WORLD_SCALE      = 5.0
 MAX_STEPS        = 500    
 SIM_DT           = 0.05   
 
+# DEMANDING PERFECTION
 POS_THRESHOLD    = 0.10   # Must get completely into the spot
-YAW_THRESHOLD    = math.radians(4)
+YAW_THRESHOLD    = math.radians(2)
 SPEED_THRESHOLD  = 0.3    
 
-COLLISION_DIST   = 0.25   
+COLLISION_DIST   = 1.25   
 
 EGO_NAME   = "/nakedAckermannSteeringCar[0]"
 PARK1_NAME = "/nakedAckermannSteeringCar[1]"
@@ -37,8 +38,8 @@ class ParallelParkingEnv(gym.Env):
         self._client, self._sim = connect()
         sim = self._sim
 
-        #sim.startSimulation()
-        #time.sleep(0.5)
+        sim.startSimulation()
+        time.sleep(0.5)
 
         # Only Ego gets the sensors (fixes the terminal warnings)
         self.ego   = AckermannCar(sim, EGO_NAME, has_sensors=True)
@@ -70,6 +71,11 @@ class ParallelParkingEnv(gym.Env):
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
+        sim = self._sim
+        sim.stopSimulation()
+        time.sleep(0.3)
+        sim.startSimulation()
+        time.sleep(0.3)
 
         if self.randomise_gap:
             self._randomise_gap()
@@ -85,12 +91,8 @@ class ParallelParkingEnv(gym.Env):
             ego_y = self._target[1] - 1.5
             ego_yaw = self._target_yaw
 
-        # Teleport the car
         self.ego.set_pose(ego_x, ego_y, ego_yaw)
         self.ego.stop()
-
-        # Let the physics engine process the teleport smoothly
-        time.sleep(0.1)
 
         self._step_count = 0
         self._prev_dist  = None
@@ -119,34 +121,31 @@ class ParallelParkingEnv(gym.Env):
 
     def close(self):
         try:
-            #self._sim.stopSimulation()
-            pass
+            self._sim.stopSimulation()
         except Exception:
             pass
 
     def _get_obs(self) -> np.ndarray:
         ego_pos, ego_yaw = self.ego.get_pose()
         ego_vel          = self.ego.get_velocity()   
+        p1_pos, _        = self.park1.get_pose()
+        p2_pos, _        = self.park2.get_pose()
 
         target = self._target
         t_yaw  = self._target_yaw
 
         to_target = (target - ego_pos) / WORLD_SCALE
+        to_p1     = (p1_pos  - ego_pos) / WORLD_SCALE
+        to_p2     = (p2_pos  - ego_pos) / WORLD_SCALE
+
         yaw_err   = _angle_wrap(t_yaw - ego_yaw) / math.pi
         time_left = 1.0 - self._step_count / MAX_STEPS
 
-        # Fetch all 8 sensors
         sensors = self.ego.get_proximity_readings(max_distance=3.0)
         s_front = sensors["front"] / 3.0
         s_left  = sensors["left"] / 3.0
         s_right = sensors["right"] / 3.0
         s_back  = sensors["back"] / 3.0
-        
-        # New Diagonal Sensors!
-        s_fl = sensors["front_left"] / 3.0
-        s_fr = sensors["front_right"] / 3.0
-        s_bl = sensors["back_left"] / 3.0
-        s_br = sensors["back_right"] / 3.0
 
         obs = np.array([
             ego_pos[0] / WORLD_SCALE,   # 0
@@ -158,15 +157,15 @@ class ParallelParkingEnv(gym.Env):
             to_target[0],               # 6
             to_target[1],               # 7
             yaw_err,                    # 8
-            time_left,                  # 9
-            s_front,                    # 10 
-            s_left,                     # 11 
-            s_right,                    # 12 
-            s_back,                     # 13
-            s_fl,                       # 14
-            s_fr,                       # 15
-            s_bl,                       # 16
-            s_br,                       # 17
+            to_p1[0],                   # 9
+            to_p1[1],                   # 10
+            to_p2[0],                   # 11
+            to_p2[1],                   # 12
+            time_left,                  # 13
+            s_front,                    # 14 
+            s_left,                     # 15 
+            s_right,                    # 16 
+            s_back,                     # 17 
         ], dtype=np.float32)
 
         return np.clip(obs, -1.0, 1.0)
@@ -179,24 +178,52 @@ class ParallelParkingEnv(gym.Env):
         dist_to_target = self._dist_to_target(obs)
         yaw_err        = abs(_angle_wrap(self._target_yaw - ego_yaw))
 
-        # Real Collision Detection using all 8 sensors! 
-        min_sensor_dist = min(
-            obs[10], obs[11], obs[12], obs[13], 
-            obs[14], obs[15], obs[16], obs[17]
-        ) * 3.0  # Multiply by 3.0 to get real meters
+        col1 = np.linalg.norm(ego_pos - p1_pos)
+        col2 = np.linalg.norm(ego_pos - p2_pos)
         
-        # If any side or corner gets closer than 15cm, it's a crash.
-        colliding = min_sensor_dist < 0.15
+        # --- THE FIX: Read raw sensors directly, ignore the observation array ---
+        raw_sensors = self.ego.get_proximity_readings(max_distance=3.0)
+        
+        # Safely grab the 4 main sensors (defaulting to 3.0m if missing)
+        front_dist = raw_sensors.get("front", 3.0)
+        left_dist  = raw_sensors.get("left", 3.0)
+        right_dist = raw_sensors.get("right", 3.0)
+        back_dist  = raw_sensors.get("back", 3.0)
+        
+        min_sensor = min(front_dist, left_dist, right_dist, back_dist)
+        # ------------------------------------------------------------------------
+        
+        # Crash if centers are too close OR if any sensor reads less than 15cm
+        colliding = (col1 < COLLISION_DIST) or (col2 < COLLISION_DIST) or (min_sensor < 0.15)
 
         progress = 0.0
         if self._prev_dist is not None:
             progress = (self._prev_dist - dist_to_target) * 15.0   
 
-        r_align = -yaw_err / math.pi * 2.5
-        r_col   = -1.0 if colliding else 0.0
-        r_time  = -0.001
+        # --- SINGLE-MOTION PARKING LOGIC ---
+        r_time  = -0.02  
+        
+        current_speed = obs[3] * 5.0 
+        
+        r_forward = 0.0
+        r_shift = 0.0
+        
+        if current_speed > 0.1:
+            r_forward = -0.05
+            
+        if getattr(self, '_prev_speed', 0.0) < -0.1 and current_speed > 0.1:
+            if dist_to_target > 0.5:
+                r_shift = -2.0 
+            else:
+                r_shift = -0.1 
+                
+        self._prev_speed = current_speed
+        # -----------------------------------
 
-        reward = progress + r_align + r_col + r_time
+        r_align = -(yaw_err / math.pi) * 10.0
+        r_col   = -1.0 if colliding else 0.0
+
+        reward = progress + r_align + r_col + r_time + r_forward + r_shift
 
         terminated = False
         info = {"dist": dist_to_target, "yaw_err": math.degrees(yaw_err)}
