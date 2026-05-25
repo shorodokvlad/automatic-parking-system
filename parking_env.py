@@ -46,6 +46,12 @@ class ParallelParkingEnv(gym.Env):
         self.park1 = AckermannCar(sim, PARK1_NAME, has_sensors=False)
         self.park2 = AckermannCar(sim, PARK2_NAME, has_sensors=False)
 
+        # Resolve static obstacle handles for collision checking
+        self.left_side = sim.getObject("/LeftSide")
+        self.right_side = sim.getObject("/RightSide")
+        self.build0_body = sim.getObject("/building[0]/body")
+        self.build1_body = sim.getObject("/building[1]/body")
+
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(18,), dtype=np.float32)
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
 
@@ -193,8 +199,11 @@ class ParallelParkingEnv(gym.Env):
         min_sensor = min(front_dist, left_dist, right_dist, back_dist)
         # ------------------------------------------------------------------------
         
-        # Crash if centers are too close OR if any sensor reads less than 15cm
-        colliding = (col1 < COLLISION_DIST) or (col2 < COLLISION_DIST) or (min_sensor < 0.15)
+        # Check physical collisions in simulator
+        sim_collision = self._check_collision()
+        
+        # Crash if simulator reports collision OR if any sensor reads less than 18cm (recess buffer)
+        colliding = sim_collision or (min_sensor < 0.18)
 
         progress = 0.0
         if self._prev_dist is not None:
@@ -247,6 +256,31 @@ class ParallelParkingEnv(gym.Env):
             info["result"] = "collision"
 
         return reward, terminated, info
+
+    def _check_collision(self) -> bool:
+        """Checks if the Ego car chassis is colliding with any parked car, boundary, or building."""
+        sim = self._sim
+        ego_body = self.ego.body_handle
+        
+        # Check collision with parked cars
+        if sim.checkCollision(ego_body, self.park1.body_handle)[0] > 0:
+            return True
+        if sim.checkCollision(ego_body, self.park2.body_handle)[0] > 0:
+            return True
+            
+        # Check collision with boundaries
+        if sim.checkCollision(ego_body, self.left_side)[0] > 0:
+            return True
+        if sim.checkCollision(ego_body, self.right_side)[0] > 0:
+            return True
+            
+        # Check collision with buildings
+        if sim.checkCollision(ego_body, self.build0_body)[0] > 0:
+            return True
+        if sim.checkCollision(ego_body, self.build1_body)[0] > 0:
+            return True
+            
+        return False
 
     def _dist_to_target(self, obs: np.ndarray) -> float:
         dx = obs[6] * WORLD_SCALE
