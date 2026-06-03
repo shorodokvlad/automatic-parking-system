@@ -5,7 +5,7 @@
 <br />
 <div align="center">
   <a href="https://github.com/shorodokvlad/automatic-parking-system">
-    <h1 align="center">🚗 CoppeliaSim RL Parallel Parking</h1>
+    <h1 align="center">🚗 CoppeliaSim RL Parallel Parking v1.0.0</h1>
   </a>
 
 <h3 align="center">Automatic Parking System</h3>
