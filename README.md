@@ -18,7 +18,7 @@
 
 <!-- ABOUT THE PROJECT -->
 ## About The Project
-
+![Screenshot](assets/Screenshot.png)
 This is a complete Reinforcement Learning-based Automatic Parking System. It features a custom Gymnasium environment representing an ego vehicle equipped with proximity sensors and a vision sensor that must learn to parallel park between two stationary vehicles in CoppeliaSim. The simulator communicates via the ZeroMQ Remote API client.
 
 Key features include:
@@ -119,27 +119,17 @@ python3 train.py --check_env
 
 ### 2. Evaluation
 
-#### 2.1 Evaluate Trained Model (Default: 10 episodes, medium difficulty)
+#### 2.1 Evaluate Trained Model (Default: 10 episodes)
+```bash
+python3 evaluate.py --model runs/ppo_parking/final_model
+```
 ```bash
 python3 evaluate.py --model runs/ppo_parking/best_model
 ```
 
-#### 2.2 Evaluate with Fixed Start Position (No Randomization)
 ```bash
-python3 evaluate.py --model runs/ppo_parking/best_model --episodes 5 --no_random
+python3 evaluate.py --model runs/ppo_parking/ppo_parking_315000_steps
 ```
-
-#### 2.3 Evaluate on a Specific Difficulty Level
-Test the model's parking capabilities under tight (`hard`) or wide (`easy`) space constraints.
-```bash
-python3 evaluate.py --model runs/ppo_parking/best_model --episodes 10 --difficulty hard
-```
-
-#### 2.4 Test with Custom Max Steps per Episode
-```bash
-python3 evaluate.py --model runs/ppo_parking/best_model --episodes 20 --max_steps 1500
-```
-
 ---
 
 ### 3. Monitoring (TensorBoard)
@@ -151,21 +141,8 @@ tensorboard --logdir runs/ppo_parking
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-<!-- LICENSE -->
-## License
 
-Distributed under the MIT License. See `LICENSE` for more information.
 
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-<!-- CONTACT -->
-## Contact
-
-Vladislav Shorodok - [@shorodokvlad](https://twitter.com/shorodokvlad) - vlad.shorodoc@gmail.com
-
-Project Link: [https://github.com/shorodokvlad/automatic-parking-system](https://github.com/shorodokvlad/automatic-parking-system)
-
-<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- MARKDOWN LINKS & IMAGES -->
 [Python-shield]: https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white

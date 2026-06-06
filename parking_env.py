@@ -13,7 +13,7 @@ from gymnasium import spaces
 from coppeliasim_car import AckermannCar, connect
 
 WORLD_SCALE      = 5.0    
-MAX_STEPS        = 500    
+MAX_STEPS        = 150    
 SIM_DT           = 0.05   
 
 # DEMANDING PERFECTION
